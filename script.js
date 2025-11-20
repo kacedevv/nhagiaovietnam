@@ -182,53 +182,46 @@ const galaxy = new THREE.Points(galaxyGeometry, galaxyMaterial);
 scene.add(galaxy);
 
 // =======================
-// Neon texture helper (same as your original)
+// Neon texture helper (kept, but force crisp filters & no mipmaps)
 // =======================
 function createNeonTexture(image, size) {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = size;
   const ctx = canvas.getContext('2d');
+
+  // draw directly (no extra blur/shadow) to keep image crisp
   const aspectRatio = image.width / image.height;
   let drawWidth, drawHeight, offsetX, offsetY;
   if (aspectRatio > 1) {
     drawWidth = size;
     drawHeight = size / aspectRatio;
     offsetX = 0;
-    offsetY = (size - drawHeight) / 2;
+    offsetY = Math.round((size - drawHeight) / 2);
   } else {
     drawHeight = size;
-    drawWidth = size * aspectRatio;
-    offsetX = (size - drawWidth) / 2;
+    drawWidth = Math.round(size * aspectRatio);
+    offsetX = Math.round((size - drawWidth) / 2);
     offsetY = 0;
   }
   ctx.clearRect(0, 0, size, size);
-  const cornerRadius = size * 0.1;
-  ctx.save();
-  ctx.beginPath();
-  ctx.moveTo(offsetX + cornerRadius, offsetY);
-  ctx.lineTo(offsetX + drawWidth - cornerRadius, offsetY);
-  ctx.arcTo(offsetX + drawWidth, offsetY, offsetX + drawWidth, offsetY + cornerRadius, cornerRadius);
-  ctx.lineTo(offsetX + drawWidth, offsetY + drawHeight - cornerRadius);
-  ctx.arcTo(offsetX + drawWidth, offsetY + drawHeight, offsetX + drawWidth - cornerRadius, offsetY + drawHeight, cornerRadius);
-  ctx.lineTo(offsetX + cornerRadius, offsetY + drawHeight);
-  ctx.arcTo(offsetX, offsetY + drawHeight, offsetX, offsetY + drawHeight - cornerRadius, cornerRadius);
-  ctx.lineTo(offsetX, offsetY + cornerRadius);
-  ctx.arcTo(offsetX, offsetY, offsetX + cornerRadius, offsetY, cornerRadius);
-  ctx.closePath();
-  ctx.clip();
+
+  // draw without any shadow/blur to maximize sharpness
   ctx.drawImage(image, offsetX, offsetY, drawWidth, drawHeight);
-  ctx.restore();
-  return new THREE.CanvasTexture(canvas);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  // IMPORTANT: preserve sharpness
+  texture.generateMipmaps = false;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  const maxAniso = renderer.capabilities.getMaxAnisotropy ? renderer.capabilities.getMaxAnisotropy() : 1;
+  texture.anisotropy = maxAniso;
+  texture.needsUpdate = true;
+  return texture;
 }
 
 // =======================
-// Enhanced heart-images loader (replaces defaultHeartImages-only behavior)
-// - manifest fetch
-// - progressive batch loading
-// - LRU texture cache
-// - drag&drop + file input upload
+// Heart images list (user files provided)
 // =======================
-
 const defaultHeartImages = [
   "images/3d618dec-327a-4484-9c71-21b3f254e6be.jpg",
   "images/444ecfd7-55da-4ac8-b78a-ee72d7ef4052.jpg",
@@ -239,11 +232,10 @@ const defaultHeartImages = [
   "images/c9a9178f-17ba-4b7e-b17d-62e7ddb80ba3.jpg"
 ];
 
-
 // config
 const heartLoaderConfig = {
   maxGroupsForScale: 14,
-  maxTextureCache: 8,
+  maxTextureCache: 12,
   batchSize: 2,
   loadDelayMS: 60,
   maxPointsTotal: galaxyParameters.count
@@ -327,11 +319,8 @@ async function buildHeartImageList() {
   return arr;
 }
 
-// ===== Add drift-control variables and defaults =====
-// heartDriftSpeed controls the speed of vertical oscillation of heart-image groups.
-// Range exposed in UI will be 0.0 .. 3.0 (0 = static)
-let heartDriftSpeed = 0.6; // default speed
-// =====================================================================
+// heartDriftSpeed controls horizontal drift speed (slider)
+let heartDriftSpeed = 0.6;
 
 // create heart groups progressively
 async function createHeartGroupsFromImages(heartImages) {
@@ -439,10 +428,11 @@ async function createHeartGroupsFromImages(heartImages) {
         geometryFar: groupGeometryFar,
         src: imgSrc,
         cx, cy, cz,
-        baseY: cy,
-        // add drift params for this group (used by drift-speed control)
+        // store base horizontal pos for drift (X & optional small Z)
+        baseX: cx,
+        baseZ: cz,
         driftPhase: Math.random() * Math.PI * 2,
-        driftAmplitude: 0.6 + Math.random() * 1.6
+        driftAmplitude: 5.0 * (0.5 + Math.random() * 1.5) // amplitude in units (pixels in world)
       };
       scene.add(pointsObject);
 
@@ -452,11 +442,11 @@ async function createHeartGroupsFromImages(heartImages) {
       img.src = imgSrc;
       img.onload = () => {
         try {
-          const neonTexture = createNeonTexture(img, 256);
+          const neonTexture = createNeonTexture(img, 512); // bigger canvas -> crisper
           textureCache.put(imgSrc, neonTexture);
 
           const materialNear = new THREE.PointsMaterial({
-            size: 1.8,
+            size: 2.2,
             map: neonTexture,
             transparent: false,
             alphaTest: 0.2,
@@ -467,7 +457,7 @@ async function createHeartGroupsFromImages(heartImages) {
           });
 
           const materialFar = new THREE.PointsMaterial({
-            size: 1.8,
+            size: 1.6,
             map: neonTexture,
             transparent: true,
             alphaTest: 0.2,
@@ -475,6 +465,22 @@ async function createHeartGroupsFromImages(heartImages) {
             blending: THREE.AdditiveBlending,
             vertexColors: true
           });
+
+          // Ensure maps are crisp
+          if (materialNear.map) {
+            materialNear.map.generateMipmaps = false;
+            materialNear.map.minFilter = THREE.LinearFilter;
+            materialNear.map.magFilter = THREE.LinearFilter;
+            materialNear.map.anisotropy = renderer.capabilities.getMaxAnisotropy ? renderer.capabilities.getMaxAnisotropy() : 1;
+            materialNear.map.needsUpdate = true;
+          }
+          if (materialFar.map) {
+            materialFar.map.generateMipmaps = false;
+            materialFar.map.minFilter = THREE.LinearFilter;
+            materialFar.map.magFilter = THREE.LinearFilter;
+            materialFar.map.anisotropy = renderer.capabilities.getMaxAnisotropy ? renderer.capabilities.getMaxAnisotropy() : 1;
+            materialFar.map.needsUpdate = true;
+          }
 
           pointsObject.userData.materialNear = materialNear;
           pointsObject.userData.materialFar = materialFar;
@@ -557,8 +563,7 @@ function createUploadControls() {
   });
 }
 
-// ========= Drift control UI =========
-// Adds a slider + preset buttons to control heart image drift speed
+// ========= Drift control UI (horizontal) =========
 function createDriftControlUI() {
   const wrap = document.createElement('div');
   wrap.style.position = 'fixed';
@@ -577,7 +582,7 @@ function createDriftControlUI() {
   document.body.appendChild(wrap);
 
   const title = document.createElement('div');
-  title.innerText = 'Tốc độ trôi ảnh';
+  title.innerText = 'Tốc độ trôi ngang (X)';
   title.style.fontSize = '13px';
   title.style.opacity = '0.9';
   wrap.appendChild(title);
@@ -640,7 +645,7 @@ function createDriftControlUI() {
 (async function initHeartImagesFlow() {
   try {
     createUploadControls();
-    createDriftControlUI(); // create drift UI (user requested)
+    createDriftControlUI();
     const list = await buildHeartImageList();
     window._heartImageList = list;
     await createHeartGroupsFromImages(list);
@@ -679,7 +684,7 @@ starField.renderOrder = 999;
 scene.add(starField);
 
 // =======================
-// Shooting stars & helpers (kept from original, cleaned)
+// Shooting stars & helpers
 // =======================
 let shootingStars = [];
 
@@ -761,7 +766,7 @@ function createShootingStar() {
 }
 
 // =======================
-// Planet + shaders (kept from original)
+// Planet + shaders (kept)
 // =======================
 function createPlanetTexture(size = 512) {
   const canvas = document.createElement('canvas');
@@ -1046,13 +1051,12 @@ function animatePlanetSystem() {
 }
 
 // =======================
-// Music playlist manager (shuffle -> sequential -> reshuffle when finished)
+// Music playlist manager (kept)
 // =======================
 let galaxyAudio = null;
 let playlist = [
   "https://files.catbox.moe/ny852l.mp3",
   "https://files.catbox.moe/esn6jf.mp3"
-  // thêm URL tại đây nếu cần
 ];
 
 let playOrder = [];
@@ -1149,7 +1153,6 @@ window.galaxyMusic = {
   rebuildOrder: buildPlayOrder
 };
 
-// backward-compatible alias if other code calls playGalaxyAudio()
 const playGalaxyAudio = startPlaylist;
 
 // =======================
@@ -1275,9 +1278,61 @@ function createHintText() {
 }
 
 // =======================
-// Animation loop & interactions
+// Interaction: click to start + select points -> overlay
 // =======================
 let introStarted = false;
+let selectedObject = null;
+let overlayEl = null;
+
+function openImageOverlay(src, obj) {
+  closeImageOverlay(); // close any existing
+  selectedObject = obj || null;
+
+  // dim background via CSS
+  overlayEl = document.createElement('div');
+  overlayEl.style.position = 'fixed';
+  overlayEl.style.left = '0';
+  overlayEl.style.top = '0';
+  overlayEl.style.width = '100%';
+  overlayEl.style.height = '100%';
+  overlayEl.style.display = 'flex';
+  overlayEl.style.alignItems = 'center';
+  overlayEl.style.justifyContent = 'center';
+  overlayEl.style.zIndex = 10000;
+  overlayEl.style.background = 'rgba(0,0,0,0.85)';
+  overlayEl.style.cursor = 'zoom-out';
+
+  const img = document.createElement('img');
+  img.src = src;
+  img.style.maxWidth = '90%';
+  img.style.maxHeight = '90%';
+  img.style.boxShadow = '0 12px 40px rgba(0,0,0,0.6)';
+  img.style.borderRadius = '8px';
+  img.style.objectFit = 'contain';
+  img.style.imageRendering = 'auto'; // keep sharp
+  overlayEl.appendChild(img);
+
+  // click outside image or on overlay -> close
+  overlayEl.addEventListener('click', (e) => {
+    // if clicked on overlay (not img), close. If clicked img, also close per request.
+    closeImageOverlay();
+  });
+
+  // prevent events falling through
+  document.body.appendChild(overlayEl);
+
+  // optional: zoom camera a bit to focus (soft)
+  controls.enabled = false;
+}
+
+function closeImageOverlay() {
+  if (!overlayEl) return;
+  overlayEl.remove();
+  overlayEl = null;
+  selectedObject = null;
+  // re-enable controls
+  controls.enabled = true;
+}
 
 function startCameraAnimation() {
   const startPos = { x: camera.position.x, y: camera.position.y, z: camera.position.z };
@@ -1343,24 +1398,70 @@ function requestFullScreen() {
   else if (elem.msRequestFullscreen) elem.msRequestFullscreen();
 }
 
+// MAIN click handler — supports:
+// - initial click on planet to start intro
+// - after intro: click on a points group to open overlay
+// - click empty space (or overlay) to close overlay (return to galaxy)
 function onCanvasClick(event) {
-  if (introStarted) return;
   const rect = renderer.domElement.getBoundingClientRect();
   mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(mouse, camera);
-  const intersects = raycaster.intersectObject(planet);
-  if (intersects.length > 0) {
-    requestFullScreen();
-    introStarted = true;
-    fadeInProgress = true;
-    document.body.classList.add("intro-started");
-    // start playlist here (user gesture from click allows audio)
-    startPlaylist();
-    startCameraAnimation();
-    if (starField && starField.geometry) starField.geometry.setDrawRange(0, originalStarCount);
+
+  if (!introStarted) {
+    // start intro when first clicking planet
+    const intersects = raycaster.intersectObject(planet);
+    if (intersects.length > 0) {
+      requestFullScreen();
+      introStarted = true;
+      fadeInProgress = true;
+      document.body.classList.add("intro-started");
+      startPlaylist();
+      startCameraAnimation();
+      if (starField && starField.geometry) starField.geometry.setDrawRange(0, originalStarCount);
+      return;
+    }
+    return;
   }
+
+  // If overlay open, clicking anywhere closes it (per request)
+  if (overlayEl) {
+    closeImageOverlay();
+    return;
+  }
+
+  // Search for points objects under cursor (prefer nearest)
+  // collect all Points objects
+  const pointsObjects = [];
+  scene.traverse(o => { if (o.isPoints && o.userData && o.userData.src) pointsObjects.push(o); });
+  // try intersect each (raycaster supports Points)
+  let nearest = null;
+  let nearestDistance = Infinity;
+  for (const p of pointsObjects) {
+    const inter = raycaster.intersectObject(p, true);
+    if (inter && inter.length) {
+      const d = inter[0].distance;
+      if (d < nearestDistance) {
+        nearestDistance = d;
+        nearest = p;
+      }
+    }
+  }
+
+  if (nearest) {
+    // open overlay for that group's image (use userData.src)
+    openImageOverlay(nearest.userData.src, nearest);
+    return;
+  }
+
+  // clicked empty space: if some object selected previously, close overlay/selection
+  // (we already handled overlayEl case). If nothing, do nothing.
+  // But user asked: "Ấn vào khoảng trống thì ảnh ấy tự thu về dải ngân hà" -> so we close overlay (already closed above) and ensure no expanded state remains.
+  // If wanted, we can trigger a ripple or shrink animation on selectedObject - simple approach: ensure selectedObject null.
+  selectedObject = null;
 }
+
+// set click listener
 renderer.domElement.addEventListener("click", onCanvasClick);
 
 // create initial extras
@@ -1469,16 +1570,20 @@ function animate() {
 
   if (shootingStars.length < 3 && Math.random() < 0.02) createShootingStar();
 
-  // switch materials for heart groups based on camera distance
+  // switch materials for heart groups based on camera distance & apply horizontal drift
   scene.traverse(obj => {
     if (obj.isPoints && obj.userData && obj.userData.materialNear && obj.userData.materialFar) {
-      // Apply vertical drift based on heartDriftSpeed and per-group phase/amplitude
-      if (obj.userData && typeof obj.userData.baseY === 'number') {
+
+      // APPLY HORIZONTAL DRIFT (X axis) + small Z wobble
+      if (obj.userData && typeof obj.userData.baseX === 'number') {
         const phase = obj.userData.driftPhase || 0;
-        const amp = obj.userData.driftAmplitude || 1.0;
-        // heartDriftSpeed controls how fast the sine wave progresses
-        const y = obj.userData.baseY + Math.sin(time * heartDriftSpeed + phase) * amp;
-        obj.position.y = y;
+        const amp = obj.userData.driftAmplitude || 4.0;
+        // horizontal oscillation on X
+        const x = obj.userData.baseX + Math.sin(time * heartDriftSpeed + phase) * amp;
+        // small depth wobble on Z for parallax
+        const z = obj.userData.baseZ + Math.cos(time * (heartDriftSpeed * 0.6) + phase * 0.7) * (amp * 0.25);
+        obj.position.x = x;
+        obj.position.z = z;
       }
 
       const positionAttr = obj.geometry.getAttribute('position');
