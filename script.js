@@ -327,6 +327,12 @@ async function buildHeartImageList() {
   return arr;
 }
 
+// ===== Add drift-control variables and defaults =====
+// heartDriftSpeed controls the speed of vertical oscillation of heart-image groups.
+// Range exposed in UI will be 0.0 .. 3.0 (0 = static)
+let heartDriftSpeed = 0.6; // default speed
+// =====================================================================
+
 // create heart groups progressively
 async function createHeartGroupsFromImages(heartImages) {
   const numGroups = heartImages.length;
@@ -432,7 +438,11 @@ async function createHeartGroupsFromImages(heartImages) {
         geometryNear: groupGeometryNear,
         geometryFar: groupGeometryFar,
         src: imgSrc,
-        cx, cy, cz
+        cx, cy, cz,
+        baseY: cy,
+        // add drift params for this group (used by drift-speed control)
+        driftPhase: Math.random() * Math.PI * 2,
+        driftAmplitude: 0.6 + Math.random() * 1.6
       };
       scene.add(pointsObject);
 
@@ -547,10 +557,90 @@ function createUploadControls() {
   });
 }
 
+// ========= Drift control UI =========
+// Adds a slider + preset buttons to control heart image drift speed
+function createDriftControlUI() {
+  const wrap = document.createElement('div');
+  wrap.style.position = 'fixed';
+  wrap.style.left = '12px';
+  wrap.style.bottom = '72px';
+  wrap.style.zIndex = 9999;
+  wrap.style.display = 'flex';
+  wrap.style.flexDirection = 'column';
+  wrap.style.gap = '8px';
+  wrap.style.padding = '8px';
+  wrap.style.borderRadius = '10px';
+  wrap.style.background = 'rgba(0,0,0,0.35)';
+  wrap.style.backdropFilter = 'blur(6px)';
+  wrap.style.color = 'white';
+  wrap.style.fontFamily = 'sans-serif';
+  document.body.appendChild(wrap);
+
+  const title = document.createElement('div');
+  title.innerText = 'Tốc độ trôi ảnh';
+  title.style.fontSize = '13px';
+  title.style.opacity = '0.9';
+  wrap.appendChild(title);
+
+  const row = document.createElement('div');
+  row.style.display = 'flex';
+  row.style.alignItems = 'center';
+  row.style.gap = '8px';
+  wrap.appendChild(row);
+
+  const slider = document.createElement('input');
+  slider.type = 'range';
+  slider.min = '0';
+  slider.max = '3';
+  slider.step = '0.01';
+  slider.value = String(heartDriftSpeed);
+  slider.style.width = '160px';
+  row.appendChild(slider);
+
+  const valLabel = document.createElement('div');
+  valLabel.innerText = heartDriftSpeed.toFixed(2);
+  valLabel.style.minWidth = '44px';
+  valLabel.style.textAlign = 'center';
+  valLabel.style.fontSize = '13px';
+  row.appendChild(valLabel);
+
+  const presets = document.createElement('div');
+  presets.style.display = 'flex';
+  presets.style.gap = '6px';
+  presets.style.marginTop = '6px';
+  wrap.appendChild(presets);
+
+  ['0 (stop)', '0.4', '0.8', '1.6', '3.0'].forEach(p => {
+    const b = document.createElement('button');
+    b.innerText = p;
+    b.style.padding = '6px 8px';
+    b.style.borderRadius = '6px';
+    b.style.border = 'none';
+    b.style.background = 'rgba(255,255,255,0.06)';
+    b.style.color = 'white';
+    b.style.cursor = 'pointer';
+    b.style.fontSize = '12px';
+    presets.appendChild(b);
+    b.addEventListener('click', () => {
+      const v = parseFloat(p.split(' ')[0]);
+      heartDriftSpeed = v;
+      slider.value = String(v);
+      valLabel.innerText = v.toFixed(2);
+    });
+  });
+
+  slider.addEventListener('input', (e) => {
+    const v = parseFloat(slider.value);
+    heartDriftSpeed = v;
+    valLabel.innerText = v.toFixed(2);
+  });
+}
+
 // init heart flow
 (async function initHeartImagesFlow() {
   try {
     createUploadControls();
+    createDriftControlUI(); // create drift UI (user requested)
     const list = await buildHeartImageList();
     window._heartImageList = list;
     await createHeartGroupsFromImages(list);
@@ -1281,9 +1371,15 @@ createHintText();
 // =======================
 // Animate loop
 // =======================
+let lastTime = performance.now() * 0.001;
+
 function animate() {
   requestAnimationFrame(animate);
-  const time = performance.now() * 0.001;
+  const now = performance.now() * 0.001;
+  const dt = Math.max(0, now - lastTime);
+  lastTime = now;
+  const time = now;
+
   animateHintIcon(time);
   controls.update();
   planet.material.uniforms.time.value = time * 0.5;
@@ -1376,6 +1472,15 @@ function animate() {
   // switch materials for heart groups based on camera distance
   scene.traverse(obj => {
     if (obj.isPoints && obj.userData && obj.userData.materialNear && obj.userData.materialFar) {
+      // Apply vertical drift based on heartDriftSpeed and per-group phase/amplitude
+      if (obj.userData && typeof obj.userData.baseY === 'number') {
+        const phase = obj.userData.driftPhase || 0;
+        const amp = obj.userData.driftAmplitude || 1.0;
+        // heartDriftSpeed controls how fast the sine wave progresses
+        const y = obj.userData.baseY + Math.sin(time * heartDriftSpeed + phase) * amp;
+        obj.position.y = y;
+      }
+
       const positionAttr = obj.geometry.getAttribute('position');
       let isClose = false;
       for (let i = 0; i < positionAttr.count; i++) {
